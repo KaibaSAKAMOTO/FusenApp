@@ -1,6 +1,23 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ScrollView, TextInput, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 interface Fusen {
   id: string;
@@ -10,6 +27,7 @@ interface Fusen {
 }
 
 interface FusenData {
+  routine: Fusen[];
   today: Fusen[];
   week: Fusen[];
   month: Fusen[];
@@ -17,10 +35,84 @@ interface FusenData {
   completed: Fusen[];
 }
 
-type SectionType = 'today' | 'week' | 'month' | 'year';
+type SectionType = 'routine' | 'today' | 'week' | 'month' | 'year';
+
+function SortableFusen({ 
+  fusen, 
+  section,
+  onComplete, 
+  onDelete,
+  onCopy,
+}: { 
+  fusen: Fusen; 
+  section: SectionType | 'completed';
+  onComplete?: () => void; 
+  onDelete: () => void;
+  onCopy?: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: fusen.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  const colorMap = {
+    yellow: '#FFF59D',
+    pink: '#F8BBD0',
+    blue: '#BBDEFB',
+    green: '#C8E6C9',
+    orange: '#FFCCBC',
+  };
+
+  return (
+    <View 
+      ref={setNodeRef} 
+      style={[
+        styles.fusenItem, 
+        { backgroundColor: colorMap[fusen.color] },
+        section === 'completed' && { opacity: 0.6 },
+        style
+      ]} 
+      {...attributes} 
+      {...listeners}
+    >
+      <Text style={[
+        styles.fusenText,
+        section === 'completed' && { textDecorationLine: 'line-through' }
+      ]}>
+        {fusen.text}
+      </Text>
+      <View style={styles.fusenButtons}>
+        {section === 'routine' && onCopy && (
+          <TouchableOpacity style={styles.copyButton} onPress={onCopy}>
+            <Text style={styles.buttonText}>📋</Text>
+          </TouchableOpacity>
+        )}
+        {onComplete && (
+          <TouchableOpacity style={styles.completeButton} onPress={onComplete}>
+            <Text style={styles.buttonText}>✓</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
+          <Text style={styles.buttonText}>🗑️</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   const [data, setData] = useState<FusenData>({
+    routine: [],
     today: [],
     week: [],
     month: [],
@@ -31,6 +123,15 @@ export default function HomeScreen() {
   const [newFusenText, setNewFusenText] = useState('');
   const [newFusenColor, setNewFusenColor] = useState<'yellow' | 'pink' | 'blue' | 'green' | 'orange'>('yellow');
   const [showCompleted, setShowCompleted] = useState(false);
+  const [activeFusen, setActiveFusen] = useState<Fusen | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    })
+  );
 
   useEffect(() => {
     loadData();
@@ -40,7 +141,12 @@ export default function HomeScreen() {
     try {
       const saved = await AsyncStorage.getItem('fusenData');
       if (saved) {
-        setData(JSON.parse(saved));
+        const parsedData = JSON.parse(saved);
+        // 古いデータにroutineがない場合は追加
+        if (!parsedData.routine) {
+          parsedData.routine = [];
+        }
+        setData(parsedData);
       }
     } catch (error) {
       console.error('データ読み込みエラー:', error);
@@ -82,6 +188,22 @@ export default function HomeScreen() {
     setShowAddForm(null);
   };
 
+  const copyFusen = (fusen: Fusen) => {
+    const newFusen: Fusen = {
+      id: Date.now().toString(),
+      text: fusen.text,
+      color: fusen.color,
+      completed: false,
+    };
+
+    const newData = {
+      ...data,
+      routine: [...data.routine, newFusen],
+    };
+
+    saveData(newData);
+  };
+
   const completeFusen = (section: SectionType, id: string) => {
     const fusen = data[section].find(f => f.id === id);
     if (!fusen) return;
@@ -90,6 +212,19 @@ export default function HomeScreen() {
       ...data,
       [section]: data[section].filter(f => f.id !== id),
       completed: [...data.completed, { ...fusen, completed: true }],
+    };
+
+    saveData(newData);
+  };
+
+  const restoreFusen = (id: string) => {
+    const fusen = data.completed.find(f => f.id === id);
+    if (!fusen) return;
+
+    const newData = {
+      ...data,
+      completed: data.completed.filter(f => f.id !== id),
+      routine: [...data.routine, { ...fusen, completed: false }],
     };
 
     saveData(newData);
@@ -104,32 +239,83 @@ export default function HomeScreen() {
     saveData(newData);
   };
 
-  const moveFusenUp = (section: SectionType, index: number) => {
-    if (index === 0) return;
-    const items = [...data[section]];
-    [items[index - 1], items[index]] = [items[index], items[index - 1]];
+  const handleDragStart = (event: DragStartEvent) => {
+    const { active } = event;
+    const allSections: Array<SectionType | 'completed'> = ['routine', 'today', 'week', 'month', 'year', 'completed'];
     
-    const newData = {
-      ...data,
-      [section]: items,
-    };
-    saveData(newData);
+    for (const section of allSections) {
+      const fusen = data[section].find(f => f.id === active.id);
+      if (fusen) {
+        setActiveFusen(fusen);
+        break;
+      }
+    }
   };
 
-  const moveFusenDown = (section: SectionType, index: number) => {
-    const items = [...data[section]];
-    if (index === items.length - 1) return;
-    [items[index], items[index + 1]] = [items[index + 1], items[index]];
-    
-    const newData = {
-      ...data,
-      [section]: items,
-    };
-    saveData(newData);
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveFusen(null);
+    const { active, over } = event;
+
+    if (!over) return;
+
+    // どのセクションから来たか、どのセクションへ行くかを判定
+    let fromSection: SectionType | 'completed' | null = null;
+    let toSection: SectionType | 'completed' | null = null;
+
+    const allSections: Array<SectionType | 'completed'> = ['routine', 'today', 'week', 'month', 'year', 'completed'];
+
+    // activeがどのセクションにあるか
+    for (const section of allSections) {
+      if (data[section].find(f => f.id === active.id)) {
+        fromSection = section;
+        break;
+      }
+    }
+
+    // overがどのセクションにあるか
+    for (const section of allSections) {
+      if (data[section].find(f => f.id === over.id) || over.id === section) {
+        toSection = section;
+        break;
+      }
+    }
+
+    if (!fromSection) return;
+
+    // 完了リストへはドラッグできない
+    if (toSection === 'completed') return;
+
+    // セクション間の移動
+    if (fromSection !== toSection && toSection) {
+      const fusen = data[fromSection].find(f => f.id === active.id);
+      if (!fusen) return;
+
+      const newData = {
+        ...data,
+        [fromSection]: data[fromSection].filter(f => f.id !== active.id),
+        [toSection]: [...data[toSection], fusen],
+      };
+
+      saveData(newData);
+    }
+    // 同じセクション内での並び替え
+    else if (active.id !== over.id && fromSection === toSection) {
+      const items = data[fromSection];
+      const oldIndex = items.findIndex(item => item.id === active.id);
+      const newIndex = items.findIndex(item => item.id === over.id);
+
+      const newData = {
+        ...data,
+        [fromSection]: arrayMove(items, oldIndex, newIndex),
+      };
+
+      saveData(newData);
+    }
   };
 
   const getSectionTitle = (section: SectionType) => {
     switch (section) {
+      case 'routine': return 'ルーティン';
       case 'today': return '今日';
       case 'week': return '今週';
       case 'month': return '今月';
@@ -157,43 +343,22 @@ export default function HomeScreen() {
     <View key={section} style={styles.section}>
       <Text style={styles.sectionTitle}>{getSectionTitle(section)}</Text>
       
-      {data[section].map((fusen, index) => (
-        <View key={fusen.id} style={[styles.fusenItem, { backgroundColor: colorMap[fusen.color] }]}>
-          <View style={styles.fusenLeft}>
-            <View style={styles.moveButtons}>
-              <TouchableOpacity 
-                style={[styles.moveButton, index === 0 && styles.moveButtonDisabled]} 
-                onPress={() => moveFusenUp(section, index)}
-                disabled={index === 0}
-              >
-                <Text style={styles.moveButtonText}>▲</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.moveButton, index === data[section].length - 1 && styles.moveButtonDisabled]} 
-                onPress={() => moveFusenDown(section, index)}
-                disabled={index === data[section].length - 1}
-              >
-                <Text style={styles.moveButtonText}>▼</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.fusenText}>{fusen.text}</Text>
-          </View>
-          <View style={styles.fusenButtons}>
-            <TouchableOpacity 
-              style={styles.completeButton} 
-              onPress={() => completeFusen(section, fusen.id)}
-            >
-              <Text style={styles.buttonText}>✓</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={styles.deleteButton} 
-              onPress={() => deleteFusen(section, fusen.id)}
-            >
-              <Text style={styles.buttonText}>🗑️</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ))}
+      <SortableContext
+        items={data[section].map(f => f.id)}
+        strategy={verticalListSortingStrategy}
+        id={section}
+      >
+        {data[section].map(fusen => (
+          <SortableFusen
+            key={fusen.id}
+            fusen={fusen}
+            section={section}
+            onComplete={section !== 'routine' ? () => completeFusen(section, fusen.id) : undefined}
+            onDelete={() => deleteFusen(section, fusen.id)}
+            onCopy={section === 'routine' ? () => copyFusen(fusen) : undefined}
+          />
+        ))}
+      </SortableContext>
 
       {showAddForm === section ? (
         <View style={styles.addForm}>
@@ -235,39 +400,68 @@ export default function HomeScreen() {
     </View>
   );
 
+  const allItems = [
+    ...data.routine.map(f => f.id),
+    ...data.today.map(f => f.id),
+    ...data.week.map(f => f.id),
+    ...data.month.map(f => f.id),
+    ...data.year.map(f => f.id),
+  ];
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>付箋アプリ</Text>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+    >
+      <View style={styles.container}>
+        <Text style={styles.title}>付箋アプリ</Text>
 
-      <TouchableOpacity style={styles.completedButton} onPress={() => setShowCompleted(!showCompleted)}>
-        <Text style={styles.completedButtonText}>
-          {showCompleted ? '未完了を表示' : `完了リスト (${data.completed.length})`}
-        </Text>
-      </TouchableOpacity>
+        <TouchableOpacity style={styles.completedButton} onPress={() => setShowCompleted(!showCompleted)}>
+          <Text style={styles.completedButtonText}>
+            {showCompleted ? '未完了を表示' : `完了リスト (${data.completed.length})`}
+          </Text>
+        </TouchableOpacity>
 
-      <ScrollView style={styles.scrollView}>
-        {showCompleted ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>完了リスト</Text>
-            {data.completed.map(fusen => (
-              <View key={fusen.id} style={[styles.fusenItem, { backgroundColor: colorMap[fusen.color], opacity: 0.6 }]}>
-                <Text style={[styles.fusenText, { textDecorationLine: 'line-through', flex: 1 }]}>{fusen.text}</Text>
-                <TouchableOpacity style={styles.deleteButton} onPress={() => deleteFusen('completed', fusen.id)}>
-                  <Text style={styles.buttonText}>🗑️</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
-        ) : (
-          <>
-            {renderSection('today')}
-            {renderSection('week')}
-            {renderSection('month')}
-            {renderSection('year')}
-          </>
-        )}
-      </ScrollView>
-    </View>
+        <ScrollView style={styles.scrollView}>
+          {showCompleted ? (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>完了リスト</Text>
+              {data.completed.map(fusen => (
+                <View key={fusen.id} style={[styles.fusenItem, { backgroundColor: colorMap[fusen.color], opacity: 0.6 }]}>
+                  <Text style={[styles.fusenText, { textDecorationLine: 'line-through', flex: 1 }]}>{fusen.text}</Text>
+                  <View style={styles.fusenButtons}>
+                    <TouchableOpacity style={styles.restoreButton} onPress={() => restoreFusen(fusen.id)}>
+                      <Text style={styles.buttonText}>↩️</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.deleteButton} onPress={() => deleteFusen('completed', fusen.id)}>
+                      <Text style={styles.buttonText}>🗑️</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <SortableContext items={allItems} strategy={verticalListSortingStrategy}>
+              {renderSection('routine')}
+              {renderSection('today')}
+              {renderSection('week')}
+              {renderSection('month')}
+              {renderSection('year')}
+            </SortableContext>
+          )}
+        </ScrollView>
+
+        <DragOverlay>
+          {activeFusen ? (
+            <View style={[styles.fusenItem, { backgroundColor: colorMap[activeFusen.color] }]}>
+              <Text style={styles.fusenText}>{activeFusen.text}</Text>
+            </View>
+          ) : null}
+        </DragOverlay>
+      </View>
+    </DndContext>
   );
 }
 
@@ -321,32 +515,6 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 3,
   },
-  fusenLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  moveButtons: {
-    flexDirection: 'column',
-    gap: 5,
-  },
-  moveButton: {
-    backgroundColor: '#666',
-    width: 24,
-    height: 20,
-    borderRadius: 4,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  moveButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  moveButtonText: {
-    color: 'white',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
   fusenText: {
     fontSize: 16,
     color: '#333',
@@ -356,8 +524,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
+  copyButton: {
+    backgroundColor: '#9C27B0',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   completeButton: {
     backgroundColor: '#4CAF50',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  restoreButton: {
+    backgroundColor: '#FF9800',
     width: 36,
     height: 36,
     borderRadius: 18,
