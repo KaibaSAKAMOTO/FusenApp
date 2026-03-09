@@ -1,23 +1,6 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ScrollView, TextInput, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent,
-} from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-  useSortable,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 
 interface Fusen {
   id: string;
@@ -36,43 +19,6 @@ interface FusenData {
 
 type SectionType = 'today' | 'week' | 'month' | 'year';
 
-function SortableFusen({ fusen, onComplete, onDelete }: { fusen: Fusen; onComplete: () => void; onDelete: () => void }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({ id: fusen.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  const colorMap = {
-    yellow: '#FFF59D',
-    pink: '#F8BBD0',
-    blue: '#BBDEFB',
-    green: '#C8E6C9',
-    orange: '#FFCCBC',
-  };
-
-  return (
-    <View ref={setNodeRef} style={[styles.fusenItem, { backgroundColor: colorMap[fusen.color] }, style]} {...attributes} {...listeners}>
-      <Text style={styles.fusenText}>{fusen.text}</Text>
-      <View style={styles.fusenButtons}>
-        <TouchableOpacity style={styles.completeButton} onPress={onComplete}>
-          <Text style={styles.buttonText}>✓</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
-          <Text style={styles.buttonText}>×</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
-
 export default function HomeScreen() {
   const [data, setData] = useState<FusenData>({
     today: [],
@@ -85,13 +31,6 @@ export default function HomeScreen() {
   const [newFusenText, setNewFusenText] = useState('');
   const [newFusenColor, setNewFusenColor] = useState<'yellow' | 'pink' | 'blue' | 'green' | 'orange'>('yellow');
   const [showCompleted, setShowCompleted] = useState(false);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
 
   useEffect(() => {
     loadData();
@@ -165,21 +104,28 @@ export default function HomeScreen() {
     saveData(newData);
   };
 
-  const handleDragEnd = (event: DragEndEvent, section: SectionType) => {
-    const { active, over } = event;
+  const moveFusenUp = (section: SectionType, index: number) => {
+    if (index === 0) return;
+    const items = [...data[section]];
+    [items[index - 1], items[index]] = [items[index], items[index - 1]];
+    
+    const newData = {
+      ...data,
+      [section]: items,
+    };
+    saveData(newData);
+  };
 
-    if (over && active.id !== over.id) {
-      const items = data[section];
-      const oldIndex = items.findIndex(item => item.id === active.id);
-      const newIndex = items.findIndex(item => item.id === over.id);
-
-      const newData = {
-        ...data,
-        [section]: arrayMove(items, oldIndex, newIndex),
-      };
-
-      saveData(newData);
-    }
+  const moveFusenDown = (section: SectionType, index: number) => {
+    const items = [...data[section]];
+    if (index === items.length - 1) return;
+    [items[index], items[index + 1]] = [items[index + 1], items[index]];
+    
+    const newData = {
+      ...data,
+      [section]: items,
+    };
+    saveData(newData);
   };
 
   const getSectionTitle = (section: SectionType) => {
@@ -211,25 +157,43 @@ export default function HomeScreen() {
     <View key={section} style={styles.section}>
       <Text style={styles.sectionTitle}>{getSectionTitle(section)}</Text>
       
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={(event) => handleDragEnd(event, section)}
-      >
-        <SortableContext
-          items={data[section].map(f => f.id)}
-          strategy={verticalListSortingStrategy}
-        >
-          {data[section].map(fusen => (
-            <SortableFusen
-              key={fusen.id}
-              fusen={fusen}
-              onComplete={() => completeFusen(section, fusen.id)}
-              onDelete={() => deleteFusen(section, fusen.id)}
-            />
-          ))}
-        </SortableContext>
-      </DndContext>
+      {data[section].map((fusen, index) => (
+        <View key={fusen.id} style={[styles.fusenItem, { backgroundColor: colorMap[fusen.color] }]}>
+          <View style={styles.fusenLeft}>
+            <View style={styles.moveButtons}>
+              <TouchableOpacity 
+                style={[styles.moveButton, index === 0 && styles.moveButtonDisabled]} 
+                onPress={() => moveFusenUp(section, index)}
+                disabled={index === 0}
+              >
+                <Text style={styles.moveButtonText}>▲</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.moveButton, index === data[section].length - 1 && styles.moveButtonDisabled]} 
+                onPress={() => moveFusenDown(section, index)}
+                disabled={index === data[section].length - 1}
+              >
+                <Text style={styles.moveButtonText}>▼</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.fusenText}>{fusen.text}</Text>
+          </View>
+          <View style={styles.fusenButtons}>
+            <TouchableOpacity 
+              style={styles.completeButton} 
+              onPress={() => completeFusen(section, fusen.id)}
+            >
+              <Text style={styles.buttonText}>✓</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.deleteButton} 
+              onPress={() => deleteFusen(section, fusen.id)}
+            >
+              <Text style={styles.buttonText}>🗑️</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ))}
 
       {showAddForm === section ? (
         <View style={styles.addForm}>
@@ -287,9 +251,9 @@ export default function HomeScreen() {
             <Text style={styles.sectionTitle}>完了リスト</Text>
             {data.completed.map(fusen => (
               <View key={fusen.id} style={[styles.fusenItem, { backgroundColor: colorMap[fusen.color], opacity: 0.6 }]}>
-                <Text style={[styles.fusenText, { textDecorationLine: 'line-through' }]}>{fusen.text}</Text>
+                <Text style={[styles.fusenText, { textDecorationLine: 'line-through', flex: 1 }]}>{fusen.text}</Text>
                 <TouchableOpacity style={styles.deleteButton} onPress={() => deleteFusen('completed', fusen.id)}>
-                  <Text style={styles.buttonText}>×</Text>
+                  <Text style={styles.buttonText}>🗑️</Text>
                 </TouchableOpacity>
               </View>
             ))}
@@ -357,6 +321,32 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 3,
   },
+  fusenLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  moveButtons: {
+    flexDirection: 'column',
+    gap: 5,
+  },
+  moveButton: {
+    backgroundColor: '#666',
+    width: 24,
+    height: 20,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  moveButtonDisabled: {
+    backgroundColor: '#ccc',
+  },
+  moveButtonText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
   fusenText: {
     fontSize: 16,
     color: '#333',
@@ -368,17 +358,17 @@ const styles = StyleSheet.create({
   },
   completeButton: {
     backgroundColor: '#4CAF50',
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
   },
   deleteButton: {
     backgroundColor: '#f44336',
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
   },
