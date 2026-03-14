@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ScrollView, TextInput, Platform } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ScrollView, TextInput, Platform, Dimensions } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   DndContext,
@@ -221,8 +221,7 @@ export default function HomeScreen() {
   const [activeFusen, setActiveFusen] = useState<Fusen | null>(null);
   const [overSection, setOverSection] = useState<SectionType | null>(null);
   const [showMoveMenu, setShowMoveMenu] = useState<{ section: SectionType; fusen: Fusen } | null>(null);
-
-  const isWeb = Platform.OS === 'web';
+  const [isMobile, setIsMobile] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -234,6 +233,22 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadData();
+    
+    // 画面幅で判定
+    const checkMobile = () => {
+      if (Platform.OS === 'web') {
+        setIsMobile(window.innerWidth < 768);
+      } else {
+        setIsMobile(true);
+      }
+    };
+    
+    checkMobile();
+    
+    if (Platform.OS === 'web') {
+      window.addEventListener('resize', checkMobile);
+      return () => window.removeEventListener('resize', checkMobile);
+    }
   }, []);
 
   const loadData = async () => {
@@ -525,11 +540,11 @@ export default function HomeScreen() {
     return (
       <View key={section} style={[
         styles.section,
-        isWeb && overSection === section && styles.sectionHighlight
+        !isMobile && overSection === section && styles.sectionHighlight
       ]}>
         <Text style={styles.sectionTitle}>{getSectionTitle(section)}</Text>
         
-        {isWeb ? (
+        {!isMobile ? (
           <SortableContext
             items={itemsWithDroppable}
             strategy={verticalListSortingStrategy}
@@ -677,7 +692,7 @@ export default function HomeScreen() {
               </View>
             ))}
           </View>
-        ) : isWeb ? (
+        ) : !isMobile ? (
           <SortableContext items={allItems} strategy={verticalListSortingStrategy}>
             {renderSection('routine')}
             {renderSection('today')}
@@ -698,7 +713,7 @@ export default function HomeScreen() {
     </>
   );
 
-  if (isWeb) {
+  if (!isMobile) {
     return (
       <DndContext
         sensors={sensors}
